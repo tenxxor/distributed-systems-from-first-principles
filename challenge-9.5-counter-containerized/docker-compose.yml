@@ -1,0 +1,85 @@
+# docker-compose.yml — declarative description of the whole cluster.
+#
+# This file replaces challenge 9's start-cluster.sh. Instead of an imperative
+# script ("start this, then that, then nginx"), we describe the DESIRED STATE
+# of the system: 3 counter containers, 1 nginx, one shared volume, one network.
+# Docker makes reality match this description and keeps it that way.
+#
+# Run:  docker compose up --build       (starts everything, rebuilds image if needed)
+#       docker compose down             (stops everything, keeps volume)
+#       docker compose down -v          (stops everything, deletes volume too)
+
+services:
+  counter-1:
+    build: .                              # build from ./Dockerfile
+    image: counter:9.5                    # tag the built image
+    container_name: counter-1
+    environment:
+      INSTANCE_NAME: counter-1            # read by config.yml ${INSTANCE_NAME}
+    volumes:
+      - shared-data:/app/shared-data      # mount the named volume
+    networks:
+      - cluster-net
+    # Publish ONLY the admin port, not the client port. Client traffic stays
+    # behind nginx (the single public entry point); admin traffic is exposed
+    # per-container so an external Prometheus can scrape each instance directly
+    # at <host>:18081, <host>:28081, <host>:38081.
+    ports:
+      - "18081:8081"
+    restart: unless-stopped               # auto-restart on crash
+
+  counter-2:
+    image: counter:9.5                    # reuse the image built by counter-1
+    container_name: counter-2
+    environment:
+      INSTANCE_NAME: counter-2
+    volumes:
+      - shared-data:/app/shared-data
+    networks:
+      - cluster-net
+    ports:
+      - "28081:8081"
+    restart: unless-stopped
+    depends_on:
+      - counter-1                          # build order only; not health-aware
+
+  counter-3:
+    image: counter:9.5
+    container_name: counter-3
+    environment:
+      INSTANCE_NAME: counter-3
+    volumes:
+      - shared-data:/app/shared-data
+    networks:
+      - cluster-net
+    ports:
+      - "38081:8081"
+    restart: unless-stopped
+    depends_on:
+      - counter-1
+
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: nginx-lb
+    ports:
+      - "9000:80"                          # host:9000 → container:80
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - cluster-net
+    restart: unless-stopped
+    depends_on:
+      - counter-1
+      - counter-2
+      - counter-3
+
+volumes:
+  shared-data:                             # Docker-managed named volume; survives
+                                           # `docker compose down` unless `-v` passed.
+
+networks:
+  cluster-net:                             # Private bridge network. Counter containers
+                                           # are NOT reachable from the host — only nginx
+                                           # exposes a port. This is container-level
+                                           # firewalling done by default.
+    driver: bridge
