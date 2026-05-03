@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>Counter Server</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+        :root {
+            color-scheme: dark;
+            --bg: #000;
+            --fg: #fff;
+            --muted: #888;
+            --border: #333;
+            --accent-bg: #fff;
+            --accent-fg: #000;
+        }
+        * { box-sizing: border-box; }
+        body {
+            background: var(--bg);
+            color: var(--fg);
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            margin: 0;
+            padding: 2.5rem 1.5rem;
+            min-height: 100vh;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+        .container {
+            max-width: 720px;
+            margin: 0 auto;
+        }
+        h1 {
+            font-size: 1.5rem;
+            font-weight: 500;
+            margin: 0 0 2rem 0;
+            letter-spacing: -0.02em;
+        }
+        .muted { color: var(--muted); }
+        .field {
+            display: flex;
+            gap: 0.75rem;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+        .field label {
+            width: 5rem;
+            color: var(--muted);
+        }
+        input {
+            background: var(--bg);
+            color: var(--fg);
+            border: 1px solid var(--border);
+            padding: 0.5rem 0.75rem;
+            font-family: inherit;
+            font-size: inherit;
+            flex: 1;
+        }
+        input:focus {
+            outline: none;
+            border-color: var(--fg);
+        }
+        button {
+            background: var(--bg);
+            color: var(--fg);
+            border: 1px solid var(--border);
+            padding: 0.5rem 1rem;
+            font-family: inherit;
+            font-size: inherit;
+            cursor: pointer;
+        }
+        button:hover { border-color: var(--fg); }
+        button.primary {
+            background: var(--accent-bg);
+            color: var(--accent-fg);
+            border-color: var(--accent-bg);
+        }
+        button.primary:hover { opacity: 0.85; }
+        button:disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+        }
+        hr {
+            border: none;
+            border-top: 1px solid var(--border);
+            margin: 2rem 0;
+        }
+        section {
+            margin-bottom: 2rem;
+        }
+        section h2 {
+            font-size: 0.85rem;
+            font-weight: 500;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            margin: 0 0 1rem 0;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            text-align: left;
+            padding: 0.6rem 0.75rem;
+            border-bottom: 1px solid var(--border);
+            vertical-align: middle;
+        }
+        th {
+            color: var(--muted);
+            font-weight: 500;
+            font-size: 0.85rem;
+        }
+        td.actions {
+            text-align: right;
+            white-space: nowrap;
+        }
+        td.actions button {
+            padding: 0.3rem 0.6rem;
+            font-size: 0.85rem;
+            margin-left: 0.3rem;
+        }
+        .pill {
+            display: inline-block;
+            padding: 0.1rem 0.5rem;
+            border: 1px solid var(--border);
+            font-size: 0.8rem;
+            color: var(--muted);
+        }
+        .pill.active {
+            color: var(--accent-fg);
+            background: var(--accent-bg);
+            border-color: var(--accent-bg);
+        }
+        .row-actions {
+            display: flex;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+            margin-bottom: 1.5rem;
+        }
+        #status {
+            color: var(--muted);
+            font-size: 0.85rem;
+            min-height: 1.2em;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+
+    <h1>counter server</h1>
+
+    <div class="field">
+        <label for="userId">user</label>
+        <input id="userId" placeholder="e.g. alice" />
+    </div>
+
+    <div class="field">
+        <label for="newId">new</label>
+        <input id="newId" placeholder="counter id" />
+        <button id="createBtn">create</button>
+    </div>
+
+    <div id="status"></div>
+
+    <hr />
+
+    <section>
+        <h2>counters</h2>
+        <table>
+            <thead>
+            <tr>
+                <th>id</th>
+                <th>likes</th>
+                <th>dislikes</th>
+                <th>score</th>
+                <th>your vote</th>
+                <th></th>
+            </tr>
+            </thead>
+            <tbody id="rows"></tbody>
+        </table>
+    </section>
+
+</div>
+
+<script>
+(() => {
+    const API = '/api/v1/counters';
+    const els = {
+        userId: document.getElementById('userId'),
+        newId: document.getElementById('newId'),
+        createBtn: document.getElementById('createBtn'),
+        rows: document.getElementById('rows'),
+        status: document.getElementById('status'),
+    };
+
+    // Remember user between page loads.
+    const saved = localStorage.getItem('counterUser');
+    if (saved) els.userId.value = saved;
+    els.userId.addEventListener('change', () => {
+        localStorage.setItem('counterUser', els.userId.value.trim());
+        refresh();
+    });
+
+    function user() { return (els.userId.value || '').trim(); }
+    function status(msg) { els.status.textContent = msg || ''; }
+
+    async function api(method, path, body, extraHeaders = {}) {
+        const headers = { ...extraHeaders };
+        const u = user();
+        if (u) headers['X-User-Id'] = u;
+        if (body !== undefined) headers['Content-Type'] = 'application/json';
+
+        const res = await fetch(API + path, {
+            method,
+            headers,
+            body: body !== undefined ? JSON.stringify(body) : undefined,
+        });
+        if (!res.ok) {
+            const text = await res.text().catch(() => '');
+            throw new Error(res.status + (text ? ' ' + text : ''));
+        }
+        if (res.status === 204) return null;
+        return res.json();
+    }
+
+    async function refresh() {
+        status('loading...');
+        try {
+            const counters = await api('GET', '');
+            const myVotes = {};
+            if (user()) {
+                await Promise.all(counters.map(async c => {
+                    try {
+                        const r = await api('GET', `/${encodeURIComponent(c.counterId)}/vote`);
+                        myVotes[c.counterId] = r.vote;
+                    } catch (e) { /* ignore */ }
+                }));
+            }
+            render(counters, myVotes);
+            status('');
+        } catch (e) {
+            status('error: ' + e.message);
+        }
+    }
+
+    function render(counters, myVotes) {
+        els.rows.innerHTML = '';
+        if (counters.length === 0) {
+            const tr = document.createElement('tr');
+            tr.innerHTML = '<td colspan="6" class="muted">no counters yet</td>';
+            els.rows.appendChild(tr);
+            return;
+        }
+        for (const c of counters) {
+            const mv = myVotes[c.counterId];
+            const tr = document.createElement('tr');
+
+            const td = (text) => { const x = document.createElement('td'); x.textContent = text; return x; };
+            tr.appendChild(td(c.counterId));
+            tr.appendChild(td(c.likes));
+            tr.appendChild(td(c.dislikes));
+            tr.appendChild(td(c.score));
+
+            const mvCell = document.createElement('td');
+            const pill = document.createElement('span');
+            pill.className = 'pill' + (mv ? ' active' : '');
+            pill.textContent = mv || '—';
+            mvCell.appendChild(pill);
+            tr.appendChild(mvCell);
+
+            const actions = document.createElement('td');
+            actions.className = 'actions';
+            actions.appendChild(mkBtn('like', () => vote(c.counterId, 'like')));
+            actions.appendChild(mkBtn('dislike', () => vote(c.counterId, 'dislike')));
+            actions.appendChild(mkBtn('clear', () => clearVote(c.counterId)));
+            actions.appendChild(mkBtn('delete', () => deleteCounter(c.counterId)));
+            tr.appendChild(actions);
+
+            els.rows.appendChild(tr);
+        }
+    }
+
+    function mkBtn(label, handler) {
+        const b = document.createElement('button');
+        b.textContent = label;
+        b.onclick = handler;
+        return b;
+    }
+
+    async function vote(id, kind) {
+        if (!user()) { status('set a user first'); return; }
+        try {
+            await api('PUT', `/${encodeURIComponent(id)}/vote`, { vote: kind });
+            refresh();
+        } catch (e) { status('error: ' + e.message); }
+    }
+
+    async function clearVote(id) {
+        if (!user()) { status('set a user first'); return; }
+        try {
+            await api('DELETE', `/${encodeURIComponent(id)}/vote`);
+            refresh();
+        } catch (e) { status('error: ' + e.message); }
+    }
+
+    async function deleteCounter(id) {
+        try {
+            await api('DELETE', `/${encodeURIComponent(id)}`);
+            refresh();
+        } catch (e) { status('error: ' + e.message); }
+    }
+
+    els.createBtn.onclick = async () => {
+        const id = els.newId.value.trim();
+        if (!id) { status('enter a counter id'); return; }
+        try {
+            await api('POST', '', { counterId: id });
+            els.newId.value = '';
+            refresh();
+        } catch (e) { status('error: ' + e.message); }
+    };
+
+    refresh();
+})();
+</script>
+
+</body>
+</html>
