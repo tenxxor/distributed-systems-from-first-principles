@@ -1,0 +1,349 @@
+# docker-compose.yml — challenge 16.
+#
+# Same 15 containers as challenge 15. The behavior change is in the counter
+# and audit-consumer code: every outbound call (Postgres per shard, Redis
+# cache, Kafka publish, audit-consumer's INSERT) is now wrapped in a
+# CIRCUIT BREAKER. When a dependency dies, the breaker opens and the call
+# fails fast (<1ms) instead of hanging on the configured timeout. Per-shard
+# breakers preserve the failure-domain independence that sharding gave us.
+#
+# Total: 15 containers.
+#   - 3 Postgres shards
+#   - 1 redis-cache
+#   - 1 redis-queue (challenge 14, unchanged)
+#   - 1 kafka, 1 kafka-init
+#   - 3 counters
+#   - 1 worker (notification, challenge 14, unchanged)
+#   - 1 analytics-consumer  (Kafka, in-memory counts)
+#   - 1 audit-consumer      (Kafka, writes to Postgres audit_log)
+#   - 1 trending-consumer   (Kafka, Redis sorted set)
+#   - 1 nginx
+
+services:
+  # ─── Three Postgres shards ────────────────────────────────────────────────
+  postgres-shard-0:
+    image: postgres:16
+    container_name: postgres-shard-0
+    environment:
+      POSTGRES_DB: counters
+      POSTGRES_USER: counter_app
+      POSTGRES_PASSWORD: change_me_in_prod
+    volumes:
+      - pg-shard-0-data:/var/lib/postgresql/data
+    networks: [cluster-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U counter_app -d counters"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+    restart: unless-stopped
+
+  postgres-shard-1:
+    image: postgres:16
+    container_name: postgres-shard-1
+    environment:
+      POSTGRES_DB: counters
+      POSTGRES_USER: counter_app
+      POSTGRES_PASSWORD: change_me_in_prod
+    volumes:
+      - pg-shard-1-data:/var/lib/postgresql/data
+    networks: [cluster-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U counter_app -d counters"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+    restart: unless-stopped
+
+  postgres-shard-2:
+    image: postgres:16
+    container_name: postgres-shard-2
+    environment:
+      POSTGRES_DB: counters
+      POSTGRES_USER: counter_app
+      POSTGRES_PASSWORD: change_me_in_prod
+    volumes:
+      - pg-shard-2-data:/var/lib/postgresql/data
+    networks: [cluster-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U counter_app -d counters"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+    restart: unless-stopped
+
+  # ─── Redis cache (no AOF, regenerable) ────────────────────────────────────
+  redis-cache:
+    image: redis:7-alpine
+    container_name: redis-cache
+    networks: [cluster-net]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+    restart: unless-stopped
+
+  # ─── Redis queue (AOF on, durable — for notification tasks) ───────────────
+  redis-queue:
+    image: redis:7-alpine
+    container_name: redis-queue
+    command:
+      - "redis-server"
+      - "--appendonly"
+      - "yes"
+      - "--appendfsync"
+      - "everysec"
+    volumes:
+      - redis-queue-data:/data
+    networks: [cluster-net]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+    restart: unless-stopped
+
+  # ─── Kafka (KRaft mode) ───────────────────────────────────────────────────
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_LISTENERS: "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT"
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks: [cluster-net]
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: kafka-init
+    networks: [cluster-net]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "kafka-init: creating topic vote-cast with 3 partitions"
+        kafka-topics \
+            --bootstrap-server kafka:9092 \
+            --create --if-not-exists \
+            --topic vote-cast \
+            --partitions 3 \
+            --replication-factor 1
+        echo "kafka-init: topic list:"
+        kafka-topics --bootstrap-server kafka:9092 --list
+    restart: "no"
+
+  # ─── Counter instances (3, producer side) ─────────────────────────────────
+  counter-1:
+    build: .
+    image: counter:16
+    container_name: counter-1
+    environment:
+      INSTANCE_NAME: counter-1
+      POSTGRES_SHARD_0_HOST: postgres-shard-0
+      POSTGRES_SHARD_1_HOST: postgres-shard-1
+      POSTGRES_SHARD_2_HOST: postgres-shard-2
+      POSTGRES_DB: counters
+      POSTGRES_USER: counter_app
+      POSTGRES_PASSWORD: change_me_in_prod
+      REDIS_CACHE_HOST: redis-cache
+      REDIS_QUEUE_HOST: redis-queue
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_VOTE_TOPIC: vote-cast
+    networks: [cluster-net]
+    ports:
+      - "18081:8081"
+    depends_on:
+      postgres-shard-0:
+        condition: service_healthy
+      postgres-shard-1:
+        condition: service_healthy
+      postgres-shard-2:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      redis-queue:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  counter-2:
+    image: counter:16
+    container_name: counter-2
+    environment:
+      INSTANCE_NAME: counter-2
+      POSTGRES_SHARD_0_HOST: postgres-shard-0
+      POSTGRES_SHARD_1_HOST: postgres-shard-1
+      POSTGRES_SHARD_2_HOST: postgres-shard-2
+      POSTGRES_DB: counters
+      POSTGRES_USER: counter_app
+      POSTGRES_PASSWORD: change_me_in_prod
+      REDIS_CACHE_HOST: redis-cache
+      REDIS_QUEUE_HOST: redis-queue
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_VOTE_TOPIC: vote-cast
+    networks: [cluster-net]
+    ports:
+      - "28081:8081"
+    depends_on:
+      postgres-shard-0:
+        condition: service_healthy
+      postgres-shard-1:
+        condition: service_healthy
+      postgres-shard-2:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      redis-queue:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  counter-3:
+    image: counter:16
+    container_name: counter-3
+    environment:
+      INSTANCE_NAME: counter-3
+      POSTGRES_SHARD_0_HOST: postgres-shard-0
+      POSTGRES_SHARD_1_HOST: postgres-shard-1
+      POSTGRES_SHARD_2_HOST: postgres-shard-2
+      POSTGRES_DB: counters
+      POSTGRES_USER: counter_app
+      POSTGRES_PASSWORD: change_me_in_prod
+      REDIS_CACHE_HOST: redis-cache
+      REDIS_QUEUE_HOST: redis-queue
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_VOTE_TOPIC: vote-cast
+    networks: [cluster-net]
+    ports:
+      - "38081:8081"
+    depends_on:
+      postgres-shard-0:
+        condition: service_healthy
+      postgres-shard-1:
+        condition: service_healthy
+      postgres-shard-2:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      redis-queue:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ─── Notification worker (challenge 14, unchanged) ────────────────────────
+  worker:
+    image: counter:16
+    container_name: worker
+    command: ["worker"]
+    environment:
+      INSTANCE_NAME: worker
+      QUEUE_REDIS_URL: redis://redis-queue:6379
+    networks: [cluster-net]
+    depends_on:
+      redis-queue:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ─── Analytics consumer (Kafka, in-memory) ────────────────────────────────
+  analytics-consumer:
+    image: counter:16
+    container_name: analytics-consumer
+    command: ["analytics-consumer"]
+    environment:
+      INSTANCE_NAME: analytics-consumer
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_VOTE_TOPIC: vote-cast
+    networks: [cluster-net]
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ─── Audit consumer (Kafka → Postgres audit_log) ──────────────────────────
+  audit-consumer:
+    image: counter:16
+    container_name: audit-consumer
+    command: ["audit-consumer"]
+    environment:
+      INSTANCE_NAME: audit-consumer
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_VOTE_TOPIC: vote-cast
+      AUDIT_DB_URL: jdbc:postgresql://postgres-shard-0:5432/counters?socketTimeout=2&connectTimeout=2
+      POSTGRES_USER: counter_app
+      POSTGRES_PASSWORD: change_me_in_prod
+    networks: [cluster-net]
+    depends_on:
+      postgres-shard-0:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ─── Trending consumer (Kafka → Redis sorted set in cache Redis) ──────────
+  trending-consumer:
+    image: counter:16
+    container_name: trending-consumer
+    command: ["trending-consumer"]
+    environment:
+      INSTANCE_NAME: trending-consumer
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_VOTE_TOPIC: vote-cast
+      REDIS_CACHE_URL: redis://redis-cache:6379
+    networks: [cluster-net]
+    depends_on:
+      redis-cache:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ─── Load balancer ────────────────────────────────────────────────────────
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: nginx-lb
+    ports:
+      - "9000:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    networks: [cluster-net]
+    restart: unless-stopped
+    depends_on:
+      - counter-1
+      - counter-2
+      - counter-3
+
+volumes:
+  pg-shard-0-data:
+  pg-shard-1-data:
+  pg-shard-2-data:
+  redis-queue-data:
+  kafka-data:
+
+networks:
+  cluster-net:
+    driver: bridge
