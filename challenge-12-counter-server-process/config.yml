@@ -1,0 +1,59 @@
+server:
+  rootPath: /api/*
+  applicationConnectors:
+    - type: http
+      port: 8080
+  adminConnectors:
+    - type: http
+      port: 8081
+  requestLog:
+    appenders:
+      - type: console
+        layout:
+          type: access-json
+
+# Primary DB — handles all writes and runs schema migrations (Flyway).
+# Single host. Connection pool sized for write traffic.
+primaryDb:
+  driverClass: org.postgresql.Driver
+  url: jdbc:postgresql://${POSTGRES_PRIMARY_HOST:-postgres-primary}:5432/${POSTGRES_DB:-counters}
+  user: ${POSTGRES_USER:-counter_app}
+  password: ${POSTGRES_PASSWORD:-change_me_in_prod}
+  maxSize: 10
+  minSize: 2
+  initialSize: 2
+  validationQuery: "SELECT 1"
+  validationQueryTimeout: 2s
+  maxWaitForConnection: 3s
+
+# Replica DB — handles all reads. Multi-host JDBC URL: the Postgres driver
+# round-robins connection attempts across the listed hosts and skips dead ones.
+#   targetServerType=preferSecondary  → prefer replicas (read-only standbys)
+#                                        but fall back to primary if all replicas down
+#   loadBalanceHosts=true              → spread connections across hosts
+# A larger pool here because reads are typically more numerous than writes.
+replicaDb:
+  driverClass: org.postgresql.Driver
+  url: jdbc:postgresql://${POSTGRES_REPLICA_HOSTS:-postgres-replica-1:5432,postgres-replica-2:5432}/${POSTGRES_DB:-counters}?targetServerType=preferSecondary&loadBalanceHosts=true
+  user: ${POSTGRES_USER:-counter_app}
+  password: ${POSTGRES_PASSWORD:-change_me_in_prod}
+  maxSize: 20
+  minSize: 4
+  initialSize: 4
+  validationQuery: "SELECT 1"
+  validationQueryTimeout: 2s
+  maxWaitForConnection: 3s
+
+redis:
+  url: redis://${REDIS_HOST:-redis}:6379
+
+logging:
+  level: INFO
+  appenders:
+    - type: console
+      layout:
+        type: json
+        timestampFormat: "yyyy-MM-dd'T'HH:mm:ss.SSSXXX"
+        includes: [timestamp, level, loggerName, threadName, message, mdc, exception]
+        additionalFields:
+          instance: ${INSTANCE_NAME:-counter}
