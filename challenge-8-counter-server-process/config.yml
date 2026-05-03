@@ -1,0 +1,39 @@
+server:
+  rootPath: /api/*
+  applicationConnectors:
+    - type: http
+      port: 8080
+  adminConnectors:
+    - type: http
+      port: 8081
+  # Emit Jetty's own per-request access log in JSON format. Production would ship this to a
+  # log aggregation system alongside the application logs below.
+  requestLog:
+    appenders:
+      - type: console
+        layout:
+          type: access-json
+
+database:
+  driverClass: org.sqlite.JDBC
+  url: jdbc:sqlite:./data/counters.db
+  # SQLite is a single-writer database. Limiting the connection pool to 1
+  # ensures all requests serialize through one connection rather than fighting
+  # over the file lock and erroring out with SQLITE_BUSY. We're trading a bit
+  # of read parallelism for write reliability — appropriate for embedded SQLite,
+  # not what we'd do with Postgres in challenge 10.
+  maxSize: 1
+  minSize: 1
+  initialSize: 1
+  properties:
+    busy_timeout: "3000"
+
+# Application logs (from our code — SLF4J/Logback loggers). Emit JSON to stdout with MDC fields.
+logging:
+  level: INFO
+  appenders:
+    - type: console
+      layout:
+        type: json
+        timestampFormat: "yyyy-MM-dd'T'HH:mm:ss.SSSXXX"
+        includes: [timestamp, level, loggerName, threadName, message, mdc, exception]
