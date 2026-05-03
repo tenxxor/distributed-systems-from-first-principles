@@ -1,0 +1,8 @@
+target/
+logs/*
+!logs/.gitkeep
+.pids/*
+!.pids/.gitkeep
+shared-data/*
+!shared-data/.gitkeep
+dependency-reduced-pom.xml
