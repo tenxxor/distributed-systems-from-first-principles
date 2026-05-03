@@ -1,0 +1,117 @@
+# docker-compose.yml — declarative description of the whole cluster for
+# challenge 10.
+#
+# Big structural change from 9.5: the shared SQLite file is gone. In its place,
+# a real Postgres container that the three counter containers talk to over TCP.
+# This is the "shared storage → shared service" transition — from "everyone
+# touches the same bytes" to "everyone sends requests to one process that
+# owns the bytes."
+#
+# Run:  docker compose up --build       (builds image + starts everything)
+#       docker compose down             (stops everything, keeps pg-data volume)
+#       docker compose down -v          (stops everything, deletes pg-data too)
+
+services:
+  # ─── Postgres (new in challenge 10) ────────────────────────────────────────
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    environment:
+      POSTGRES_DB: counters
+      POSTGRES_USER: counter_app
+      POSTGRES_PASSWORD: change_me_in_prod
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    networks:
+      - cluster-net
+    # Counters depend on this being HEALTHY (not just running) before they
+    # start — Postgres takes a few seconds to initialize the data directory
+    # on first run. A TCP probe isn't enough; pg_isready checks the server is
+    # actually ready to accept connections.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U counter_app -d counters"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+    restart: unless-stopped
+
+  # ─── Counter instances (3 replicas, same image) ────────────────────────────
+  counter-1:
+    build: .
+    image: counter:10
+    container_name: counter-1
+    environment:
+      INSTANCE_NAME: counter-1
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: counters
+      POSTGRES_USER: counter_app
+      POSTGRES_PASSWORD: change_me_in_prod
+    networks:
+      - cluster-net
+    ports:
+      - "18081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy       # wait for pg_isready
+    restart: unless-stopped
+
+  counter-2:
+    image: counter:10
+    container_name: counter-2
+    environment:
+      INSTANCE_NAME: counter-2
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: counters
+      POSTGRES_USER: counter_app
+      POSTGRES_PASSWORD: change_me_in_prod
+    networks:
+      - cluster-net
+    ports:
+      - "28081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  counter-3:
+    image: counter:10
+    container_name: counter-3
+    environment:
+      INSTANCE_NAME: counter-3
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: counters
+      POSTGRES_USER: counter_app
+      POSTGRES_PASSWORD: change_me_in_prod
+    networks:
+      - cluster-net
+    ports:
+      - "38081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ─── Load balancer (unchanged from 9.5) ────────────────────────────────────
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: nginx-lb
+    ports:
+      - "9000:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - cluster-net
+    restart: unless-stopped
+    depends_on:
+      - counter-1
+      - counter-2
+      - counter-3
+
+volumes:
+  pg-data:                                 # Postgres's on-disk data directory.
+                                           # Survives `docker compose down`;
+                                           # deleted only by `down -v`.
+
+networks:
+  cluster-net:
+    driver: bridge
