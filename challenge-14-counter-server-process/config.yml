@@ -1,0 +1,73 @@
+server:
+  rootPath: /api/*
+  applicationConnectors:
+    - type: http
+      port: 8080
+  adminConnectors:
+    - type: http
+      port: 8081
+  requestLog:
+    appenders:
+      - type: console
+        layout:
+          type: access-json
+
+# Three shards, each its own independent Postgres cluster. The application
+# routes each counter to one of these via Math.abs(hash(counterId)) % N.
+# Reads and writes for the same counter go to the same shard.
+shardDbs:
+  - driverClass: org.postgresql.Driver
+    url: jdbc:postgresql://${POSTGRES_SHARD_0_HOST:-postgres-shard-0}:5432/${POSTGRES_DB:-counters}
+    user: ${POSTGRES_USER:-counter_app}
+    password: ${POSTGRES_PASSWORD:-change_me_in_prod}
+    maxSize: 10
+    minSize: 2
+    initialSize: 2
+    validationQuery: "SELECT 1"
+    validationQueryTimeout: 2s
+    maxWaitForConnection: 3s
+
+  - driverClass: org.postgresql.Driver
+    url: jdbc:postgresql://${POSTGRES_SHARD_1_HOST:-postgres-shard-1}:5432/${POSTGRES_DB:-counters}
+    user: ${POSTGRES_USER:-counter_app}
+    password: ${POSTGRES_PASSWORD:-change_me_in_prod}
+    maxSize: 10
+    minSize: 2
+    initialSize: 2
+    validationQuery: "SELECT 1"
+    validationQueryTimeout: 2s
+    maxWaitForConnection: 3s
+
+  - driverClass: org.postgresql.Driver
+    url: jdbc:postgresql://${POSTGRES_SHARD_2_HOST:-postgres-shard-2}:5432/${POSTGRES_DB:-counters}
+    user: ${POSTGRES_USER:-counter_app}
+    password: ${POSTGRES_PASSWORD:-change_me_in_prod}
+    maxSize: 10
+    minSize: 2
+    initialSize: 2
+    validationQuery: "SELECT 1"
+    validationQueryTimeout: 2s
+    maxWaitForConnection: 3s
+
+# Two Redis instances now — different concerns, different persistence needs.
+#
+# cacheRedis: no AOF, ephemeral. Cache data is regenerable from Postgres,
+# so losing it on restart is fine.
+cacheRedis:
+  url: redis://${REDIS_CACHE_HOST:-redis-cache}:6379
+
+# queueRedis: AOF enabled, durable. Task messages MUST survive restart —
+# losing them means losing scheduled work the user thinks succeeded.
+queueRedis:
+  url: redis://${REDIS_QUEUE_HOST:-redis-queue}:6379
+
+logging:
+  level: INFO
+  appenders:
+    - type: console
+      layout:
+        type: json
+        timestampFormat: "yyyy-MM-dd'T'HH:mm:ss.SSSXXX"
+        includes: [timestamp, level, loggerName, threadName, message, mdc, exception]
+        additionalFields:
+          instance: ${INSTANCE_NAME:-counter}

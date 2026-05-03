@@ -1,0 +1,234 @@
+# docker-compose.yml — challenge 14.
+#
+# Adds two new things to the cluster:
+#   1. A SECOND Redis ("redis-queue") with AOF persistence — separate from
+#      the existing "redis-cache" so cache and queue have independent
+#      failure domains and persistence settings.
+#   2. A WORKER container that runs the same JAR as the counters but with
+#      a different `command:` arg, dispatching to WorkerApplication.
+#
+# Total: 11 containers. Same JAR powers counters AND worker — single image,
+# multi-role pattern. See README's notes for "could we have used one Redis?"
+#
+# Run:  docker compose up --build
+#       docker compose down            (keeps shard data + queue data)
+#       docker compose down -v         (wipes all volumes including queue)
+
+services:
+  # ─── Three Postgres shards (unchanged from challenge 13) ──────────────────
+  postgres-shard-0:
+    image: postgres:16
+    container_name: postgres-shard-0
+    environment:
+      POSTGRES_DB: counters
+      POSTGRES_USER: counter_app
+      POSTGRES_PASSWORD: change_me_in_prod
+    volumes:
+      - pg-shard-0-data:/var/lib/postgresql/data
+    networks: [cluster-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U counter_app -d counters"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+    restart: unless-stopped
+
+  postgres-shard-1:
+    image: postgres:16
+    container_name: postgres-shard-1
+    environment:
+      POSTGRES_DB: counters
+      POSTGRES_USER: counter_app
+      POSTGRES_PASSWORD: change_me_in_prod
+    volumes:
+      - pg-shard-1-data:/var/lib/postgresql/data
+    networks: [cluster-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U counter_app -d counters"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+    restart: unless-stopped
+
+  postgres-shard-2:
+    image: postgres:16
+    container_name: postgres-shard-2
+    environment:
+      POSTGRES_DB: counters
+      POSTGRES_USER: counter_app
+      POSTGRES_PASSWORD: change_me_in_prod
+    volumes:
+      - pg-shard-2-data:/var/lib/postgresql/data
+    networks: [cluster-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U counter_app -d counters"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+    restart: unless-stopped
+
+  # ─── Cache Redis (no persistence — cache is regenerable) ──────────────────
+  redis-cache:
+    image: redis:7-alpine
+    container_name: redis-cache
+    networks: [cluster-net]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+    restart: unless-stopped
+
+  # ─── Queue Redis (AOF on — task messages must survive restart) ────────────
+  redis-queue:
+    image: redis:7-alpine
+    container_name: redis-queue
+    # AOF (append-only file) writes every command to disk. fsync=everysec
+    # is the recommended balance: at most 1s of writes lost on a hard crash,
+    # but no performance hit per-command.
+    command:
+      - "redis-server"
+      - "--appendonly"
+      - "yes"
+      - "--appendfsync"
+      - "everysec"
+    volumes:
+      - redis-queue-data:/data
+    networks: [cluster-net]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+    restart: unless-stopped
+
+  # ─── Counter instances (3, same image, default CMD = "server config.yml") ─
+  counter-1:
+    build: .
+    image: counter:14
+    container_name: counter-1
+    environment:
+      INSTANCE_NAME: counter-1
+      POSTGRES_SHARD_0_HOST: postgres-shard-0
+      POSTGRES_SHARD_1_HOST: postgres-shard-1
+      POSTGRES_SHARD_2_HOST: postgres-shard-2
+      POSTGRES_DB: counters
+      POSTGRES_USER: counter_app
+      POSTGRES_PASSWORD: change_me_in_prod
+      REDIS_CACHE_HOST: redis-cache
+      REDIS_QUEUE_HOST: redis-queue
+    networks: [cluster-net]
+    ports:
+      - "18081:8081"
+    depends_on:
+      postgres-shard-0:
+        condition: service_healthy
+      postgres-shard-1:
+        condition: service_healthy
+      postgres-shard-2:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      redis-queue:
+        condition: service_healthy
+    restart: unless-stopped
+
+  counter-2:
+    image: counter:14
+    container_name: counter-2
+    environment:
+      INSTANCE_NAME: counter-2
+      POSTGRES_SHARD_0_HOST: postgres-shard-0
+      POSTGRES_SHARD_1_HOST: postgres-shard-1
+      POSTGRES_SHARD_2_HOST: postgres-shard-2
+      POSTGRES_DB: counters
+      POSTGRES_USER: counter_app
+      POSTGRES_PASSWORD: change_me_in_prod
+      REDIS_CACHE_HOST: redis-cache
+      REDIS_QUEUE_HOST: redis-queue
+    networks: [cluster-net]
+    ports:
+      - "28081:8081"
+    depends_on:
+      postgres-shard-0:
+        condition: service_healthy
+      postgres-shard-1:
+        condition: service_healthy
+      postgres-shard-2:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      redis-queue:
+        condition: service_healthy
+    restart: unless-stopped
+
+  counter-3:
+    image: counter:14
+    container_name: counter-3
+    environment:
+      INSTANCE_NAME: counter-3
+      POSTGRES_SHARD_0_HOST: postgres-shard-0
+      POSTGRES_SHARD_1_HOST: postgres-shard-1
+      POSTGRES_SHARD_2_HOST: postgres-shard-2
+      POSTGRES_DB: counters
+      POSTGRES_USER: counter_app
+      POSTGRES_PASSWORD: change_me_in_prod
+      REDIS_CACHE_HOST: redis-cache
+      REDIS_QUEUE_HOST: redis-queue
+    networks: [cluster-net]
+    ports:
+      - "38081:8081"
+    depends_on:
+      postgres-shard-0:
+        condition: service_healthy
+      postgres-shard-1:
+        condition: service_healthy
+      postgres-shard-2:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      redis-queue:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ─── Worker (same image, different role — see CounterApplication.main) ────
+  worker:
+    image: counter:14
+    container_name: worker
+    # Override the default CMD: triggers WorkerApplication.runWorker() in the
+    # main() dispatcher. The worker doesn't bind any port — it pulls tasks
+    # from Redis and processes them.
+    command: ["worker"]
+    environment:
+      INSTANCE_NAME: worker
+      QUEUE_REDIS_URL: redis://redis-queue:6379
+    networks: [cluster-net]
+    depends_on:
+      redis-queue:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ─── Load balancer ────────────────────────────────────────────────────────
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: nginx-lb
+    ports:
+      - "9000:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    networks: [cluster-net]
+    restart: unless-stopped
+    depends_on:
+      - counter-1
+      - counter-2
+      - counter-3
+
+volumes:
+  pg-shard-0-data:
+  pg-shard-1-data:
+  pg-shard-2-data:
+  redis-queue-data:    # NEW: persists the task queue across restarts
+
+networks:
+  cluster-net:
+    driver: bridge
