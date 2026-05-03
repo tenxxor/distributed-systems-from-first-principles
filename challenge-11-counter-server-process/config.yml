@@ -1,0 +1,51 @@
+server:
+  rootPath: /api/*
+  applicationConnectors:
+    - type: http
+      port: 8080
+  adminConnectors:
+    - type: http
+      port: 8081
+  requestLog:
+    appenders:
+      - type: console
+        layout:
+          type: access-json
+
+database:
+  driverClass: org.postgresql.Driver
+  # Postgres is now a separate process reached over TCP, not a file on disk.
+  # The hostname "postgres" resolves to the postgres container via Docker's
+  # embedded DNS on cluster-net.
+  url: jdbc:postgresql://${POSTGRES_HOST:-postgres}:5432/${POSTGRES_DB:-counters}
+  user: ${POSTGRES_USER:-counter_app}
+  password: ${POSTGRES_PASSWORD:-change_me_in_prod}
+  # Postgres supports real concurrency (MVCC, row-level locks), unlike SQLite's
+  # single-writer model. We can afford a real connection pool now — 10 connections
+  # per instance, 30 total across three instances. Postgres's default max_connections
+  # is 100, so we're well under it even if we scale to ~9 instances.
+  maxSize: 10
+  minSize: 2
+  initialSize: 2
+  # Validate connections on checkout — cheap, catches a dropped DB before
+  # a request hits it.
+  validationQuery: "SELECT 1"
+  validationQueryTimeout: 2s
+  # How long a request will wait for a connection from the pool before giving up.
+  maxWaitForConnection: 3s
+
+redis:
+  # Redis is a separate process reached over TCP. Hostname "redis" resolves to
+  # the redis container via Docker's embedded DNS on cluster-net.
+  url: redis://${REDIS_HOST:-redis}:6379
+
+logging:
+  level: INFO
+  appenders:
+    - type: console
+      layout:
+        type: json
+        timestampFormat: "yyyy-MM-dd'T'HH:mm:ss.SSSXXX"
+        includes: [timestamp, level, loggerName, threadName, message, mdc, exception]
+        additionalFields:
+          instance: ${INSTANCE_NAME:-counter}

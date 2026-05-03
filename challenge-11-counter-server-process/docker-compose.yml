@@ -1,0 +1,139 @@
+# docker-compose.yml — challenge 11.
+#
+# Adds a Redis container next to the existing Postgres. The structural change
+# from 10 to 11 is "cache moved out of process" — same architectural pattern
+# as the SQLite → Postgres move, applied to caching:
+#
+#   - 9.5: per-instance Caffeine caches in JVM heap → caches diverge across instances
+#   - 11:  shared Redis cache → all instances see the same cache state
+#
+# Redis is intentionally *not* given a persistent volume: the cache is an
+# optimization on top of Postgres (the source of truth). Losing it on restart
+# just means a brief cold-cache window, not data loss.
+#
+# Run:  docker compose up --build
+#       docker compose down             (stops, keeps pg-data; redis has nothing to keep)
+#       docker compose down -v          (also wipes pg-data)
+
+services:
+  # ─── Postgres (unchanged from challenge 10) ────────────────────────────────
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    environment:
+      POSTGRES_DB: counters
+      POSTGRES_USER: counter_app
+      POSTGRES_PASSWORD: change_me_in_prod
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    networks:
+      - cluster-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U counter_app -d counters"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+    restart: unless-stopped
+
+  # ─── Redis (new in challenge 11) ───────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    networks:
+      - cluster-net
+    # No volume — we use Redis purely as a cache. The DB is the source of
+    # truth; if Redis loses everything on restart, the next read repopulates.
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+    restart: unless-stopped
+
+  # ─── Counter instances (3 replicas, same image) ────────────────────────────
+  counter-1:
+    build: .
+    image: counter:11
+    container_name: counter-1
+    environment:
+      INSTANCE_NAME: counter-1
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: counters
+      POSTGRES_USER: counter_app
+      POSTGRES_PASSWORD: change_me_in_prod
+      REDIS_HOST: redis
+    networks:
+      - cluster-net
+    ports:
+      - "18081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  counter-2:
+    image: counter:11
+    container_name: counter-2
+    environment:
+      INSTANCE_NAME: counter-2
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: counters
+      POSTGRES_USER: counter_app
+      POSTGRES_PASSWORD: change_me_in_prod
+      REDIS_HOST: redis
+    networks:
+      - cluster-net
+    ports:
+      - "28081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  counter-3:
+    image: counter:11
+    container_name: counter-3
+    environment:
+      INSTANCE_NAME: counter-3
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: counters
+      POSTGRES_USER: counter_app
+      POSTGRES_PASSWORD: change_me_in_prod
+      REDIS_HOST: redis
+    networks:
+      - cluster-net
+    ports:
+      - "38081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ─── Load balancer (unchanged from 9.5/10) ────────────────────────────────
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: nginx-lb
+    ports:
+      - "9000:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - cluster-net
+    restart: unless-stopped
+    depends_on:
+      - counter-1
+      - counter-2
+      - counter-3
+
+volumes:
+  pg-data:
+
+networks:
+  cluster-net:
+    driver: bridge
