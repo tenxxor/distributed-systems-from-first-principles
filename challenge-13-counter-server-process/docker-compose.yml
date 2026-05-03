@@ -1,0 +1,199 @@
+# docker-compose.yml — challenge 13.
+#
+# Three Postgres SHARDS — each one its own independent cluster, no replication
+# between them. Each shard owns ~1/3 of the keyspace, decided by the
+# application's hash function. Different counters live on different shards;
+# different counters can be written to in parallel because they're physically
+# on different Postgres servers.
+#
+# Compared to challenge 12 (1 primary + 2 replicas):
+#   - 12: scale READS by adding replicas. Writes still funnel through 1 primary.
+#   - 13: scale WRITES by partitioning the keyspace across N primaries. Reads
+#         for a given counter still go to one shard; the write throughput
+#         ceiling is now N * single-primary-throughput.
+#
+# We do NOT add replicas to each shard — pure sharding only. Production
+# typically combines: each shard has its own primary + replicas. Compound
+# complexity, same primitives.
+#
+# Run:  docker compose up --build
+#       docker compose down             (keeps shard data)
+#       docker compose down -v          (wipes all shards)
+
+services:
+  # ─── Three Postgres shards ─────────────────────────────────────────────────
+  postgres-shard-0:
+    image: postgres:16
+    container_name: postgres-shard-0
+    environment:
+      POSTGRES_DB: counters
+      POSTGRES_USER: counter_app
+      POSTGRES_PASSWORD: change_me_in_prod
+    volumes:
+      - pg-shard-0-data:/var/lib/postgresql/data
+    networks:
+      - cluster-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U counter_app -d counters"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+    restart: unless-stopped
+
+  postgres-shard-1:
+    image: postgres:16
+    container_name: postgres-shard-1
+    environment:
+      POSTGRES_DB: counters
+      POSTGRES_USER: counter_app
+      POSTGRES_PASSWORD: change_me_in_prod
+    volumes:
+      - pg-shard-1-data:/var/lib/postgresql/data
+    networks:
+      - cluster-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U counter_app -d counters"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+    restart: unless-stopped
+
+  postgres-shard-2:
+    image: postgres:16
+    container_name: postgres-shard-2
+    environment:
+      POSTGRES_DB: counters
+      POSTGRES_USER: counter_app
+      POSTGRES_PASSWORD: change_me_in_prod
+    volumes:
+      - pg-shard-2-data:/var/lib/postgresql/data
+    networks:
+      - cluster-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U counter_app -d counters"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+    restart: unless-stopped
+
+  # ─── Redis (still ONE — the cache key already includes counter_id, so the
+  # same key always hits the same Redis entry regardless of shard) ───────────
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    networks:
+      - cluster-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+    restart: unless-stopped
+
+  # ─── Counter instances (3, same image) ─────────────────────────────────────
+  counter-1:
+    build: .
+    image: counter:13
+    container_name: counter-1
+    environment:
+      INSTANCE_NAME: counter-1
+      POSTGRES_SHARD_0_HOST: postgres-shard-0
+      POSTGRES_SHARD_1_HOST: postgres-shard-1
+      POSTGRES_SHARD_2_HOST: postgres-shard-2
+      POSTGRES_DB: counters
+      POSTGRES_USER: counter_app
+      POSTGRES_PASSWORD: change_me_in_prod
+      REDIS_HOST: redis
+    networks:
+      - cluster-net
+    ports:
+      - "18081:8081"
+    depends_on:
+      postgres-shard-0:
+        condition: service_healthy
+      postgres-shard-1:
+        condition: service_healthy
+      postgres-shard-2:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  counter-2:
+    image: counter:13
+    container_name: counter-2
+    environment:
+      INSTANCE_NAME: counter-2
+      POSTGRES_SHARD_0_HOST: postgres-shard-0
+      POSTGRES_SHARD_1_HOST: postgres-shard-1
+      POSTGRES_SHARD_2_HOST: postgres-shard-2
+      POSTGRES_DB: counters
+      POSTGRES_USER: counter_app
+      POSTGRES_PASSWORD: change_me_in_prod
+      REDIS_HOST: redis
+    networks:
+      - cluster-net
+    ports:
+      - "28081:8081"
+    depends_on:
+      postgres-shard-0:
+        condition: service_healthy
+      postgres-shard-1:
+        condition: service_healthy
+      postgres-shard-2:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  counter-3:
+    image: counter:13
+    container_name: counter-3
+    environment:
+      INSTANCE_NAME: counter-3
+      POSTGRES_SHARD_0_HOST: postgres-shard-0
+      POSTGRES_SHARD_1_HOST: postgres-shard-1
+      POSTGRES_SHARD_2_HOST: postgres-shard-2
+      POSTGRES_DB: counters
+      POSTGRES_USER: counter_app
+      POSTGRES_PASSWORD: change_me_in_prod
+      REDIS_HOST: redis
+    networks:
+      - cluster-net
+    ports:
+      - "38081:8081"
+    depends_on:
+      postgres-shard-0:
+        condition: service_healthy
+      postgres-shard-1:
+        condition: service_healthy
+      postgres-shard-2:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ─── Load balancer (unchanged) ─────────────────────────────────────────────
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: nginx-lb
+    ports:
+      - "9000:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - cluster-net
+    restart: unless-stopped
+    depends_on:
+      - counter-1
+      - counter-2
+      - counter-3
+
+volumes:
+  pg-shard-0-data:
+  pg-shard-1-data:
+  pg-shard-2-data:
+
+networks:
+  cluster-net:
+    driver: bridge
