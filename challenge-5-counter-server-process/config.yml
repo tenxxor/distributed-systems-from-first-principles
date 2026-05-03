@@ -1,0 +1,22 @@
+server:
+  rootPath: /api/*
+  applicationConnectors:
+    - type: http
+      port: 8080
+  adminConnectors:
+    - type: http
+      port: 8081
+
+database:
+  driverClass: org.sqlite.JDBC
+  url: jdbc:sqlite:./data/counters.db
+  # SQLite is a single-writer database. Limiting the connection pool to 1
+  # ensures all requests serialize through one connection rather than fighting
+  # over the file lock and erroring out with SQLITE_BUSY. We're trading a bit
+  # of read parallelism for write reliability — appropriate for embedded SQLite,
+  # not what we'd do with Postgres in challenge 10.
+  maxSize: 1
+  minSize: 1
+  initialSize: 1
+  properties:
+    busy_timeout: "3000"
