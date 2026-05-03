@@ -1,0 +1,39 @@
+# Maven build artifacts
+target/
+*.class
+dependency-reduced-pom.xml
+*.jar
+!**/lib/*.jar
+.mvn/
+
+# IDE — IntelliJ, Eclipse, VS Code
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.project
+.classpath
+.settings/
+.factorypath
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+logs/
+
+# Local environment
+.env
+.env.local
+.env.*.local
+
+# Docker volumes mounted as local dirs (none today, but just in case)
+**/local-data/
+**/.docker-data/
+
+# Local-only archive of superseded prototypes (rung-0/1/2)
+archive/
